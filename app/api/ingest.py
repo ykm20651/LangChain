@@ -5,7 +5,7 @@ ingest.py
 - URL / 텍스트 / PDF 파일 업로드를 지원
 """
 
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from app.services.vectorstore import VectorStoreService
@@ -19,7 +19,7 @@ vs = VectorStoreService()
 
 
 # -------------------------------------------------------------
-# 요청 모델 정의
+# 요청 모델 정의 - DTO
 # -------------------------------------------------------------
 class IngestRequest(BaseModel):
     """
@@ -107,3 +107,17 @@ async def ingest_directory(
         return {"ok": True, "added": count, "collection": collection, "dir": dir_path}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/count-all")
+async def count_all(collection: str = Query(...)):
+    try:
+        chunk_count = vs.count(collection)
+        doc_count = vs.count_documents(collection)
+        return {
+            "collection": collection,
+            "document_count": doc_count,
+            "chunk_count": chunk_count
+        }
+    except Exception as e:
+        return {"error": str(e)}
+

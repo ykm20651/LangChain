@@ -13,7 +13,7 @@ RAG 벡터스토어 서비스
 
 RAG의 핵심은 “LLM이 모르는 사실을 외부에서 끌어다 쓴다”는 것임.
 GPT는 해양사고보험법이나 MARPOL 협약 전문을 통째로 기억하지 않기 때문에, 벡터스토어에 넣은 텍스트 조각들을 불러와서 
-요약 컨텍스트로 제공해야 → “출처 기반, 사실 일관된 보고서”를 만들 수 있음.
+요약 컨텍스트로 제공해야 → “출처 기반, 사실 일관된 보고서”를 만들 수 있
 """
 
 from __future__ import annotations
@@ -303,3 +303,15 @@ class VectorStoreService:
         # 실서비스에선 별도의 메타파일을 관리할 것을 권장.
         # 일단은 None 리턴로 두거나, 필요한 경우 확장.
         return names
+
+    def count_documents(self, collection: str) -> int:
+        """
+        해당 컬렉션에 저장된 서로 다른 문서(source) 개수 반환
+        """
+        store = self._chroma(collection)
+        # 모든 메타데이터 불러오기
+        metadatas = store.get(include=["metadatas"])["metadatas"]
+        # source 필드 기준으로 unique count
+        sources = {m.get("source") for m in metadatas if m.get("source")}
+        return len(sources)
+
