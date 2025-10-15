@@ -10,6 +10,10 @@ RAG 벡터스토어 서비스
 환경변수:
 - OPENAI_API_KEY         : OpenAI API 키
 - RAG_PERSIST_DIR        : Chroma 영속 저장 위치 (기본: ./storage/chroma)
+
+RAG의 핵심은 “LLM이 모르는 사실을 외부에서 끌어다 쓴다”는 것임.
+GPT는 해양사고보험법이나 MARPOL 협약 전문을 통째로 기억하지 않기 때문에, 벡터스토어에 넣은 텍스트 조각들을 불러와서 
+요약 컨텍스트로 제공해야 → “출처 기반, 사실 일관된 보고서”를 만들 수 있음.
 """
 
 from __future__ import annotations

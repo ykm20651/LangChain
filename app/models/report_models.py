@@ -31,7 +31,7 @@ class ReportResponse(BaseModel):
 
 
 # ------------------------------------------------------------
-# 2️⃣ 사건 데이터 기반 해양 보험 보고서 생성 요청
+# 2️.  사건 데이터 기반 해양 보험 보고서 생성 요청 -> 핵심 
 # ------------------------------------------------------------
 from pydantic import BaseModel, Field
 from typing import Optional
