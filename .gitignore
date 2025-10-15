@@ -1,0 +1,6 @@
+.env
+venv/
+src/
+
+CH-01.txt
+requirements.txt
