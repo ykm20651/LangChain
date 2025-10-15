@@ -1,6 +1,7 @@
 .env
 venv/
 src/
+__pycache__
 
 CH-01.txt
 requirements.txt

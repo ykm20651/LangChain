@@ -31,20 +31,31 @@ class ReportResponse(BaseModel):
 
 
 # ------------------------------------------------------------
-# 2️. 사건 데이터 기반 해양 보험 보고서 생성 요청
+# 2️⃣ 사건 데이터 기반 해양 보험 보고서 생성 요청
 # ------------------------------------------------------------
+from pydantic import BaseModel, Field
+from typing import Optional
+
 class IncidentReportRequest(BaseModel):
     """
     해양 사고 데이터를 기반으로 보고서를 생성하는 요청 모델.
+    Spring의 FastApiReportRequest와 동일한 필드 구조로 수정됨.
     내부적으로 RAGChain + ReportChain을 사용하여
     보험약관 및 법령 기반 보고서를 생성한다.
     """
-    incident_data: Dict[str, Any] = Field(..., description="사고 세부 데이터(JSON)")
+    incident_type: str = Field(..., description="사고 유형 (예: fire, oil_spill, collision, crew_injury 등)")
+    description: str = Field(..., description="사고 설명 또는 세부 내용")
+    location: str = Field(..., description="사고 발생 위치")
+    report_type: Optional[str] = Field(default="INITIAL", description="보고서 유형 (예: INITIAL, UPDATE 등)")
+    language: Optional[str] = Field(default="ko", description="생성할 보고서 언어 코드 (예: ko, en)")
+
+    # LangChain/RAG 설정
     use_rag: bool = Field(default=True, description="RAG 컨텍스트 사용 여부")
     collection: Optional[str] = Field(default="default", description="RAG 벡터스토어 컬렉션명")
     top_k: Optional[int] = Field(default=5, description="RAG 검색 문서 수")
     model: Optional[str] = Field(default="gpt-4o-mini", description="사용할 OpenAI 모델명")
     title: Optional[str] = Field(default="해양 보험 청구 보고서", description="PDF 제목")
+
 
 
 # ------------------------------------------------------------
