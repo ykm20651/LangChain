@@ -6,7 +6,7 @@ main.py
 """
 
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI # 이거로 앱 인스턴스 생성 
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
