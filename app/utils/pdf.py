@@ -1,95 +1,75 @@
-"""
-pdf.py
-- 보고서 텍스트를 PDF로 저장하는 유틸리티
-- LangChain 결과 텍스트를 사람이 읽기 좋은 형식으로 렌더링
-"""
-
-import os
-import textwrap
-from datetime import datetime
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import cm
-from reportlab.pdfgen import canvas
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from datetime import datetime
 
 
-def _draw_wrapped_text(
-    c: canvas.Canvas,
-    text: str,
-    x: float,
-    y: float,
-    width_chars: int = 85,
-    leading: int = 16,
-) -> float:
+def save_report_pdf(path: str, title: str, question: str, answer: str):
     """
-    긴 텍스트를 PDF 페이지 폭에 맞게 자동 줄바꿈하여 출력.
-    Returns: 마지막 y 좌표 (다음 줄 그릴 위치)
+    보고서 텍스트를 PDF로 보기 좋게 저장하는 함수.
+    Markdown 비슷한 형식을 유지하며, 한글 폰트 적용.
     """
-    lines = []
-    for paragraph in text.split("\n"):
-        lines.extend(textwrap.wrap(paragraph, width=width_chars) or [""])
-    for line in lines:
-        c.drawString(x, y, line)
-        y -= leading
-        if y < 2 * cm:
-            c.showPage()
-            c.setFont("Helvetica", 11)
-            y = A4[1] - 2 * cm
-    return y
+    # ✅ 한글 폰트 등록
+    pdfmetrics.registerFont(UnicodeCIDFont("HYSMyeongJo-Medium"))
 
+    # ✅ 문서 객체 생성
+    doc = SimpleDocTemplate(
+        path,
+        pagesize=A4,
+        rightMargin=40,
+        leftMargin=40,
+        topMargin=50,
+        bottomMargin=40,
+    )
 
-def save_report_pdf(
-    path: str,
-    title: str,
-    question: str,
-    answer: str,
-    font: str = "Helvetica",
-):
-    """
-    LangChain LLM이 생성한 보고서를 PDF 파일로 저장.
-    Args:
-        path: 저장 경로 (e.g., ./storage/reports/{task_id}.pdf)
-        title: 보고서 제목
-        question: 입력 프롬프트 (질문 또는 사고정보)
-        answer: LLM의 생성 결과 (보고서 본문)
-    """
-    # 디렉토리 없으면 생성
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    styles = getSampleStyleSheet()
+    # 기존 스타일 이름과 충돌 방지 → "Custom..." 으로 변경
+    styles.add(ParagraphStyle(name="CustomTitle", fontName="HYSMyeongJo-Medium", fontSize=18, leading=24, spaceAfter=12, alignment=1))
+    styles.add(ParagraphStyle(name="CustomHeading1", fontName="HYSMyeongJo-Medium", fontSize=14, leading=20, spaceBefore=14, spaceAfter=8))
+    styles.add(ParagraphStyle(name="CustomHeading2", fontName="HYSMyeongJo-Medium", fontSize=12, leading=18, spaceBefore=8, spaceAfter=6))
+    styles.add(ParagraphStyle(name="CustomBody", fontName="HYSMyeongJo-Medium", fontSize=11, leading=16, spaceAfter=6))
+    styles.add(ParagraphStyle(name="CustomCode", fontName="HYSMyeongJo-Medium", fontSize=10, leading=14, backColor="#f4f4f4"))
 
-    # PDF 캔버스 초기화
-    c = canvas.Canvas(path, pagesize=A4)
-    w, h = A4
-    x = 2 * cm
-    y = h - 2 * cm
+    content = []
 
-    # 보고서 제목
-    c.setFont(f"{font}-Bold", 16)
-    c.drawString(x, y, title)
-    y -= 22
+    # 🔹 제목
+    content.append(Paragraph(title, styles["CustomTitle"]))
+    content.append(Paragraph(f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["CustomBody"]))
+    content.append(Spacer(1, 12))
 
-    # 생성일시
-    c.setFont(font, 10)
-    c.drawString(x, y, f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    y -= 18
+    # 🔹 질문 섹션
+    content.append(Paragraph("<b>[질문]</b>", styles["CustomHeading1"]))
+    for line in question.split("\n"):
+        if line.strip():
+            content.append(Paragraph(line.strip(), styles["CustomBody"]))
 
-    # 질문/입력 데이터
-    c.setFont(f"{font}-Bold", 12)
-    c.drawString(x, y, "[입력 데이터]")
-    y -= 16
-    c.setFont(font, 11)
-    y = _draw_wrapped_text(c, question, x, y)
+    content.append(Spacer(1, 12))
 
-    # 구분선
-    y -= 10
-    c.line(x, y, w - 2 * cm, y)
-    y -= 18
+    # 🔹 답변 섹션
+    content.append(Paragraph("<b>[답변]</b>", styles["CustomHeading1"]))
 
-    # 답변 / 보고서 본문
-    c.setFont(f"{font}-Bold", 12)
-    c.drawString(x, y, "[생성된 보고서]")
-    y -= 18
-    c.setFont(font, 11)
-    y = _draw_wrapped_text(c, answer, x, y)
+    # Markdown-like 처리
+    for line in answer.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("# "):
+            content.append(Paragraph(line[2:], styles["CustomHeading1"]))
+        elif line.startswith("## "):
+            content.append(Paragraph(line[3:], styles["CustomHeading2"]))
+        elif line.startswith("- "):
+            content.append(Paragraph(f"• {line[2:]}", styles["CustomBody"]))
+        elif line.startswith("**"):
+            content.append(Paragraph(f"<b>{line}</b>", styles["CustomBody"]))
+        else:
+            content.append(Paragraph(line, styles["CustomBody"]))
 
-    # PDF 완료
-    c.showPage()
-    c.save()
+    content.append(Spacer(1, 20))
+    content.append(Paragraph("──────────────────────────────", styles["CustomBody"]))
+    content.append(Paragraph("본 보고서는 LangChain 기반 AI 분석 결과입니다.", styles["CustomBody"]))
+
+    # ✅ PDF 빌드
+    doc.build(content)
