@@ -6,7 +6,7 @@ ingest.py
 """
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field # 랭체인과 별개 
 from typing import List, Optional
 from app.services.vectorstore import VectorStoreService
 
@@ -21,7 +21,7 @@ vs = VectorStoreService()
 # -------------------------------------------------------------
 # 요청 모델 정의 - DTO
 # -------------------------------------------------------------
-class IngestRequest(BaseModel):
+class IngestRequest(BaseModel): #BaseModel은 들어오는 인자들(HTTP JSON Body)을 타입 검증하고 Python 객체로 변환해줌.
     """
     URL 또는 텍스트를 통한 문서 수집 요청 모델
     """
@@ -31,7 +31,7 @@ class IngestRequest(BaseModel):
 
 
 # -------------------------------------------------------------
-# 1️⃣ URL 수집 API
+# URL 수집 API
 # -------------------------------------------------------------
 @router.post("/urls")
 async def ingest_urls(req: IngestRequest):
@@ -48,7 +48,7 @@ async def ingest_urls(req: IngestRequest):
 
 
 # -------------------------------------------------------------
-# 2️⃣ 텍스트 수집 API
+# 텍스트 수집 API
 # -------------------------------------------------------------
 @router.post("/texts")
 async def ingest_texts(req: IngestRequest):
@@ -65,7 +65,7 @@ async def ingest_texts(req: IngestRequest):
 
 
 # -------------------------------------------------------------
-# 3️⃣ PDF 파일 업로드 API
+# PDF 파일 업로드 API
 # -------------------------------------------------------------
 @router.post("/pdf")
 async def ingest_pdf(
@@ -91,7 +91,7 @@ async def ingest_pdf(
 
 
 # -------------------------------------------------------------
-# 4️⃣ (선택) 로컬 폴더 수집 API
+# (선택) 로컬 폴더 수집 API
 # -------------------------------------------------------------
 @router.post("/directory")
 async def ingest_directory(

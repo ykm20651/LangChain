@@ -4,14 +4,40 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-from datetime import datetime
+from reportlab.pdfbase.ttfonts import TTFont
+import os
 
-def _kv_table_from_incident(incident_data: Optional[Dict[str, Any]]) -> Optional[Table]:
+
+def _register_korean_font() -> str:
+    """Windows/macOS/Linux 환경에 맞춰 한글 폰트를 안전하게 등록"""
+    try:
+        if os.name == "nt" and os.path.exists(r"C:\Windows\Fonts\malgun.ttf"):
+            pdfmetrics.registerFont(TTFont("Malgun", r"C:\Windows\Fonts\malgun.ttf"))
+            return "Malgun"
+        elif os.path.exists("/System/Library/Fonts/AppleSDGothicNeo.ttc"):
+            pdfmetrics.registerFont(TTFont("AppleSDGothicNeo", "/System/Library/Fonts/AppleSDGothicNeo.ttc"))
+            return "AppleSDGothicNeo"
+        elif os.path.exists("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"):
+            pdfmetrics.registerFont(TTFont("NotoSansCJK", "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"))
+            return "NotoSansCJK"
+    except Exception as e:
+        print(f"[WARN] 폰트 등록 실패: {e}")
+    return "Helvetica"
+
+
+def _kv_table_from_incident(incident_data: Optional[Dict[str, Any]], font_name: str) -> Optional[Table]:
     if not incident_data:
         return None
 
-    # 한국어 라벨 매핑
+    # Paragraph 스타일
+    cell_style = ParagraphStyle(
+        "Cell",
+        fontName=font_name,
+        fontSize=10,
+        leading=14,
+        wordWrap="CJK",
+    )
+
     label_map = {
         "incident_type": "사고유형",
         "description": "설명",
@@ -20,103 +46,96 @@ def _kv_table_from_incident(incident_data: Optional[Dict[str, Any]]) -> Optional
         "language": "언어",
     }
 
-    data: List[List[str]] = [["항목", "값"]]
+    # ✅ 데이터 구성 (Paragraph로 감싸서 줄바꿈 가능)
+    data: List[List[Any]] = []
+    data.append([Paragraph("<b>항목</b>", cell_style), Paragraph("<b>값</b>", cell_style)])
+
     order = ["incident_type", "description", "location", "report_type", "language"]
     for k in order:
         v = incident_data.get(k)
         if v is not None and str(v).strip() != "":
-            data.append([label_map.get(k, k), str(v)])
+            key_p = Paragraph(label_map.get(k, k), cell_style)
+            val_p = Paragraph(str(v), cell_style)
+            data.append([key_p, val_p])
 
-    if len(data) == 1:
-        return None
-
-    table = Table(data, colWidths=[100, 370])
+    # ✅ 표 생성
+    table = Table(data, colWidths=[100, 380])
     table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#F0F0F0")),
-        ('TEXTCOLOR', (0,0), (-1,0), colors.black),
-        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
-        ('FONTNAME', (0,0), (-1,-1), 'HYSMyeongJo-Medium'),
-        ('FONTSIZE', (0,0), (-1,-1), 10),
-        ('INNERGRID', (0,0), (-1,-1), 0.4, colors.grey),
-        ('BOX', (0,0), (-1,-1), 0.6, colors.black),
-        ('BOTTOMPADDING', (0,0), (-1,0), 6),
-        ('TOPPADDING', (0,0), (-1,0), 6),
+        # 헤더 스타일
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#D9D9D9")),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
+        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, 0), 'MIDDLE'),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+        ('TOPPADDING', (0, 0), (-1, 0), 6),
+
+        # 셀 스타일
+        ('ALIGN', (0, 1), (-1, -1), 'LEFT'),
+        ('VALIGN', (0, 1), (-1, -1), 'MIDDLE'),
+        ('FONTNAME', (0, 0), (-1, -1), font_name),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+
+        # 테두리 및 그리드
+        ('INNERGRID', (0, 0), (-1, -1), 0.4, colors.HexColor("#A0A0A0")),
+        ('BOX', (0, 0), (-1, -1), 0.8, colors.black),
     ]))
     return table
 
 
-def save_report_pdf(
-    path: str,
-    title: str,
-    answer: str,
-    incident_data: Optional[Dict[str, Any]] = None,
-    subtitle: Optional[str] = None,
-):
-    """
-    보고서 텍스트를 PDF로 저장.
-    - 상단: 제목 / 생성시각
-    - 기본정보 표: incident_data로 구성
-    - 본문: LLM이 생성한 보험 청구서 섹션 텍스트 (Markdown 유사 규칙 그대로)
-    """
-    # ✅ 한글 폰트 등록
-    pdfmetrics.registerFont(UnicodeCIDFont("HYSMyeongJo-Medium"))
+def save_report_pdf(path, title, answer, incident_data, subtitle=""):
+    """PDF 보고서 저장 (표 + 본문 + 디자인 정돈 버전)"""
+    font_name = _register_korean_font()
 
-    # ✅ 문서 객체 생성
-    doc = SimpleDocTemplate(
-        path,
-        pagesize=A4,
-        rightMargin=40,
-        leftMargin=40,
-        topMargin=50,
-        bottomMargin=40,
-    )
+    doc = SimpleDocTemplate(path, pagesize=A4)
+    elements = []
 
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name="CustomTitle", fontName="HYSMyeongJo-Medium", fontSize=18, leading=24, spaceAfter=12, alignment=1))
-    styles.add(ParagraphStyle(name="CustomSub", fontName="HYSMyeongJo-Medium", fontSize=11, leading=16, spaceAfter=4, alignment=1, textColor=colors.grey))
-    styles.add(ParagraphStyle(name="CustomHeading1", fontName="HYSMyeongJo-Medium", fontSize=14, leading=20, spaceBefore=14, spaceAfter=8))
-    styles.add(ParagraphStyle(name="CustomHeading2", fontName="HYSMyeongJo-Medium", fontSize=12, leading=18, spaceBefore=8, spaceAfter=6))
-    styles.add(ParagraphStyle(name="CustomBody", fontName="HYSMyeongJo-Medium", fontSize=11, leading=16, spaceAfter=6))
-    styles.add(ParagraphStyle(name="CustomCode", fontName="HYSMyeongJo-Medium", fontSize=10, leading=14, backColor="#f4f4f4"))
 
-    content = []
+    # 제목 / 본문 스타일
+    title_style = ParagraphStyle(
+        'Title',
+        fontName=font_name,
+        fontSize=18,
+        leading=22,
+        alignment=1,  # Center
+    )
+    subtitle_style = ParagraphStyle(
+        'Subtitle',
+        fontName=font_name,
+        fontSize=10,
+        leading=12,
+        alignment=1,
+        textColor=colors.gray,
+    )
+    normal = ParagraphStyle(
+        'Normal',
+        parent=styles['Normal'],
+        fontName=font_name,
+        fontSize=10,
+        leading=14,
+        wordWrap='CJK',
+    )
+    section_title = ParagraphStyle(
+        'Heading2',
+        fontName=font_name,
+        fontSize=13,
+        leading=18,
+        spaceBefore=10,
+        spaceAfter=6,
+    )
 
-    # 🔹 제목/서브타이틀/생성시각
-    content.append(Paragraph(title, styles["CustomTitle"]))
-    ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    content.append(Paragraph(subtitle or "보험 청구 보고서 (자동 생성)", styles["CustomSub"]))
-    content.append(Paragraph(f"Generated at: {ts}", styles["CustomSub"]))
-    content.append(Spacer(1, 10))
+    # 제목
+    elements.append(Paragraph(title, title_style))
+    elements.append(Paragraph(subtitle, subtitle_style))
+    elements.append(Spacer(1, 20))
 
-    # 🔹 기본정보 표 (incident_data)
-    info_table = _kv_table_from_incident(incident_data)
-    if info_table:
-        content.append(Paragraph("<b>기본정보</b>", styles["CustomHeading1"]))
-        content.append(info_table)
-        content.append(Spacer(1, 8))
+    # ✅ 기본정보 섹션
+    elements.append(Paragraph("기본정보", section_title))
+    table = _kv_table_from_incident(incident_data, font_name)
+    elements.append(table)
+    elements.append(Spacer(1, 20))
 
-    # 🔹 본문
-    content.append(Paragraph("<b>본문</b>", styles["CustomHeading1"]))
+    # ✅ 본문 (개행 포함)
+    elements.append(Paragraph(answer.replace("\n", "<br/>"), normal))
 
-    # Markdown-like 처리 (제목/소제목/리스트/기타)
-    for raw in answer.split("\n"):
-        line = raw.strip()
-        if not line:
-            continue
-        if line.startswith("# "):
-            content.append(Paragraph(line[2:], styles["CustomHeading1"]))
-        elif line.startswith("## "):
-            content.append(Paragraph(line[3:], styles["CustomHeading2"]))
-        elif line.startswith("- "):
-            content.append(Paragraph(f"• {line[2:]}", styles["CustomBody"]))
-        elif line.startswith("**"):
-            content.append(Paragraph(f"<b>{line.strip('*')}</b>", styles["CustomBody"]))
-        else:
-            content.append(Paragraph(line, styles["CustomBody"]))
-
-    content.append(Spacer(1, 16))
-    content.append(Paragraph("──────────────────────────────", styles["CustomBody"]))
-    content.append(Paragraph("본 보고서는 LangChain 기반 RAG+LLM으로 자동 생성되었습니다.", styles["CustomBody"]))
-
-    # ✅ PDF 빌드
-    doc.build(content)
+    doc.build(elements)
