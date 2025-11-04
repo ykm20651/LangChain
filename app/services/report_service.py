@@ -1,81 +1,108 @@
-
 """
-ReportService / InsuranceReportService
-- (옵션) QA + RAG
-- 사고 데이터 기반: RAG 컨텍스트 생성 → 사고유형별 템플릿 보고서 생성 → PDF 저장
-
-환경변수:
-- REPORTS_DIR: PDF 저장 디렉터리 (기본: ./storage/reports)
+InsuranceReportService (최종 안정화 버전)
+- RAG + Pydantic + SecretStr 완전 대응
 """
 
 from __future__ import annotations
-
 import os
-from typing import Optional, Tuple, Dict, Any
+import json
+from typing import Optional, Dict, Any
+from pydantic.json import pydantic_encoder
+from pydantic import SecretStr
 
 from app.chains.rag_chain import RAGChain
 from app.chains.report_chain import ReportChain
-from app.services.memory_manager import MemoryManager  # (선택) QA 히스토리용
 from app.utils.pdf import save_report_pdf
+from app.chains.report_structured_chain import StructuredReportChain
+from app.models.report_models import InsurancePydanticReportResponse
 
 
-# -----------------------------------------------------------
-# 핵심: 사건 데이터 기반 보험 보고서 생성
-# -----------------------------------------------------------
+# ---------------------------------------------------------------------
+# 안전 직렬화 유틸 (최종 완성본)
+# ---------------------------------------------------------------------
+def to_safe_json(obj):
+    """
+    dict / list / pydantic / SecretStr / callable / class / LangChain Runnable 등
+    모든 타입을 안전하게 직렬화 가능한 형태로 변환
+    """
+    from pydantic import SecretStr
+
+    # 클래스 자체
+    if isinstance(obj, type):
+        return str(obj)
+
+    # LangChain Runnable 계열 (예: RunnableLambda, RunnableSequence 등)
+    if "Runnable" in obj.__class__.__name__:
+        return f"<{obj.__class__.__name__}>"
+
+    # SecretStr (보안 문자열)
+    if isinstance(obj, SecretStr):
+        try:
+            return obj.get_secret_value()
+        except Exception:
+            return "********"
+
+    # dict
+    if isinstance(obj, dict):
+        return {k: to_safe_json(v) for k, v in obj.items()}
+
+    # list/tuple/set
+    if isinstance(obj, (list, tuple, set)):
+        return [to_safe_json(i) for i in obj]
+
+    # Pydantic 객체 (BaseModel)
+    if hasattr(obj, "model_dump") and not isinstance(obj, type):
+        try:
+            return to_safe_json(obj.model_dump())
+        except Exception:
+            return str(obj)
+
+    # callable (함수/메서드)
+    if callable(obj):
+        return f"<function {obj.__name__}>"
+
+    # 기본형
+    return obj
+
+
+
+# ---------------------------------------------------------------------
 class InsuranceReportService:
     """
     사건 데이터(incident_data) → (선택) RAG 컨텍스트 → 사고유형별 템플릿 보고서 → PDF 저장
-    - 사고유형: fire | oil_spill | collision | crew_injury
     """
 
     def __init__(self):
         self.reports_dir = os.getenv("REPORTS_DIR", "./storage/reports")
         os.makedirs(self.reports_dir, exist_ok=True)
+        self.default_collection = os.getenv("RAG_DEFAULT_COLLECTION", "marine_laws")
 
-    
+    # ---------------------------------------------------------------------
     def _build_seed_query(self, incident_data: Dict[str, Any], incident_type: str) -> str:
-        """
-        RAG 검색 시 사용할 seed query를 사고유형에 맞게 생성.
-        - description/title이 있으면 우선 포함
-        - 유형별 키워드로 법령/약관을 더 잘 당겨오도록 힌트 제공
-        """
-        # RAG 검색에 쓸 씨앗 질문(seed query) 구성
-        desc = str(
-            incident_data.get("description", incident_data.get("title", "")) or ""
-        ).strip()
-
-
+        desc = str(incident_data.get("description", incident_data.get("title", "")) or "").strip()
         itype = (incident_type or incident_data.get("incident_type", "generic")).lower()
 
-        if itype == "fire":
-            hint = "선박 화재사고 처리 기준, 보험 약관 화재조항, 선박안전법 관련 조항"
-        elif itype == "oil_spill":
-            hint = "유류유출 방제 기준, 해양환경관리법, MARPOL 협약, 보험 약관 오염조항"
-        elif itype == "collision":
-            hint = "선박 충돌 관련 해사안전법, 국제충돌예방규칙 COLREGS, 보험 약관 충돌조항"
-        elif itype == "crew_injury":
-            hint = "선원 재해 보상, 선원법, 산재보험 관련 규정, 보험 약관 인적사고 조항"
-        else:
-            hint = "해상보험 일반 약관, 선박사고 일반 규정"
+        hints = {
+            "fire": "선박 화재사고 처리 기준, 보험 약관 화재조항, 선박안전법 관련 조항",
+            "oil_spill": "유류유출 방제 기준, 해양환경관리법, MARPOL 협약, 보험 약관 오염조항",
+            "collision": "선박 충돌 관련 해사안전법, 국제충돌예방규칙 COLREGS, 보험 약관 충돌조항",
+            "crew_injury": "선원 재해 보상, 선원법, 산재보험 관련 규정, 보험 약관 인적사고 조항",
+        }
 
-        # 최종 seed는 “사건 설명 + 검색 힌트” 합본. RAG에 그대로 넣을 질문 재료.
-        seed = f"{desc}\n\n[검색 힌트]\n{hint}"
-        return seed.strip()
+        hint = hints.get(itype, "해상보험 일반 약관, 선박사고 일반 규정")
+        return f"{desc}\n\n[검색 힌트]\n{hint}".strip()
 
+    # ---------------------------------------------------------------------
     def _rag_context(
         self,
-        collection: str,
-        top_k: int,
         seed_query: str,
+        top_k: int,
         model: str = "gpt-4o-mini",
         temperature: float = 0.0,
+        collection: Optional[str] = None,
     ) -> str:
-        """
-        RAGChain으로 법령/약관 컨텍스트 생성.
-        - temperature는 낮게: 사실기반 요약/편집에 유리
-        """
         rag = RAGChain(
-            collection=collection,
+            collection=collection or self.default_collection,
             top_k=top_k,
             model=model,
             temperature=temperature,
@@ -83,46 +110,25 @@ class InsuranceReportService:
         )
         return rag.run(seed_query)
 
-    # ---------- 퍼블릭 API ----------
+    # ---------------------------------------------------------------------
+    # 1. 보험 보고서 PDF 생성
+    # ---------------------------------------------------------------------
     def generate_insurance_report_pdf(
         self,
         task_id: str,
         incident_data: Dict[str, Any],
         incident_type: Optional[str] = None,
         use_rag: bool = True,
-        collection: str = "default",
         top_k: int = 5,
         title: str = "해양 보험 청구 보고서",
         model: str = "gpt-4o-mini",
         temperature: float = 0.1,
     ):
-        """
-        1) (옵션) RAG 컨텍스트 생성
-        2) 사고유형별 템플릿으로 보고서 작성
-        3) PDF 저장
-        """
-
-        # 1️. RAG 컨텍스트 생성 (일단 해양 사고 관련 법령들을 넣어야 함.) == RAG로 찾아온 문서들의 핵심 요약문
-        """
-        RAGContext는 새로운 데이터를 저장하는 게 아니라,
-        이미 VectorDB(벡터 데이터베이스) 에 저장되어 있던 지식들 중에서
-        현재 질의(seed query) 와 “의미적으로 가까운” 것들을 찾아서
-        그 내용을 묶어 만든 요약 문맥(context)임.
-        
-        * RAGContext = (VectorDB에서 검색한 문서 조각들) + (LLM이 요약해서 만든 문맥)
-        """
         rag_ctx = ""
         if use_rag:
             seed = self._build_seed_query(incident_data, incident_type or "")
-            rag_ctx = self._rag_context(
-                collection=collection,
-                top_k=top_k,
-                seed_query=seed,
-                model=model,
-                temperature=0.0,  # 사실요약은 낮게
-            )
+            rag_ctx = self._rag_context(seed_query=seed, top_k=top_k, model=model)
 
-        # 2️. 사고 유형별 보고서 생성
         chain = ReportChain(model=model, temperature=temperature)
         resolved_type = (incident_type or incident_data.get("incident_type", "generic")).lower()
 
@@ -132,109 +138,99 @@ class InsuranceReportService:
             incident_type=resolved_type,
         )
 
-        # LangChain 0.2.x 이상에서는 LLM 응답이 str이 아닌 AIMessage 객체로 나오더라 -> 안전하게 문자열로 변환.
-        if hasattr(report_text, "content"):  # 예: AIMessage(content="텍스트...")
+        if hasattr(report_text, "content"):
             report_text = report_text.content
         elif not isinstance(report_text, str):
-            # 혹시나 content 외 다른 형식이면 문자열로 변환
             report_text = str(report_text)
 
-        # 3.  PDF 저장
         path = os.path.join(self.reports_dir, f"{task_id}.pdf")
-
-        q = (
-            f"[제목] {title}\n"
-            f"[사고유형] {resolved_type}\n"
-            f"[RAG 컨텍스트 사용 여부] {use_rag}\n"
-            f"[사고 데이터]\n{incident_data}"
+        save_report_pdf(
+            path=path,
+            title=title,
+            answer=report_text,
+            incident_data=incident_data,
+            subtitle=f"Task ID: {task_id}",
         )
-
-        try:
-            save_report_pdf(path, title=title, question=q, answer=report_text)
-            print(f"✅ 보고서 PDF 저장 완료: {path}")
-        except Exception as e:
-            print(f"❌ PDF 저장 중 오류 발생: {e}")
-            raise e
-
+        print(f"보고서 <PDF> 저장 완료: {path}")
         return path
 
-
-    def get_report_path(self, task_id: str) -> Optional[str]:
-        path = os.path.join(self.reports_dir, f"{task_id}.pdf")
-        return path if os.path.exists(path) else None
-
-
-# -----------------------------------------------------------
-#  기존 QA + RAG (질문을 만약 받을거면)
-# -----------------------------------------------------------
-class ReportService:
-    """
-    (선택) 자유 질문 → RAG QA → 답변 or PDF
-    - 시스템 목표가 '보고서 자동 생성'이므로, 단순 QA가 필요 없으면 이 클래스를 생략해도 됨.
-    """
-
-    def __init__(self):
-        self.memory = MemoryManager()
-        self.reports_dir = os.getenv("REPORTS_DIR", "./storage/reports")
-        os.makedirs(self.reports_dir, exist_ok=True)
-
-    def qa_with_memory(
-        self,
-        question: str,
-        session_id: Optional[str],
-        collection: str,
-        top_k: int,
-        model: str = "gpt-4o-mini",
-        temperature: float = 0.2,
-    ) -> Tuple[str, str]:
-        """
-        대화 컨텍스트(최근 20턴)를 질문 앞에 붙여 RAG QA 수행.
-        """
-        sid = self.memory.ensure(session_id)
-        history = self.memory.history_text(sid)
-
-        # 히스토리를 질문 앞에 붙여 프롬프트 강화
-        prompt_text = f"{history}\n\n현재 질문: {question}\n"
-
-        rag = RAGChain(
-            collection=collection,
-            top_k=top_k,
-            model=model,
-            temperature=temperature,
-            include_sources=True,
-        )
-        answer = rag.run(prompt_text)
-
-        # 메모리 갱신
-        self.memory.add_user(sid, question)
-        self.memory.add_ai(sid, answer)
-        return answer, sid
-
-    def generate_and_save_report(
+    # ---------------------------------------------------------------------
+    def generate_structured_report_background(
         self,
         task_id: str,
-        question: str,
-        session_id: Optional[str],
-        collection: str,
-        top_k: int,
-        title: str = "자동 생성 보고서",
+        incident_data: Dict[str, Any],
+        use_rag: bool = True,
+        top_k: int = 5,
         model: str = "gpt-4o-mini",
-        temperature: float = 0.2,
+        title: str = "해양 보험 청구 보고서",
+        temperature: float = 0.1,
+        collection: Optional[str] = None,
     ):
         """
-        QA 결과를 PDF로 저장.
+        구조화된 보고서를 JSON + PDF 모두 저장 (2~3페이지 완성본)
         """
-        answer, _sid = self.qa_with_memory(
-            question=question,
-            session_id=session_id,
-            collection=collection,
+        report: InsurancePydanticReportResponse = self.generate_structured_report(
+            incident_data=incident_data,
+            use_rag=use_rag,
             top_k=top_k,
             model=model,
+            title=title,
             temperature=temperature,
+            collection=collection,
         )
-        path = os.path.join(self.reports_dir, f"{task_id}.pdf")
-        save_report_pdf(path, title=title, question=question, answer=answer)
 
-    def get_report_path(self, task_id: str) -> Optional[str]:
-        path = os.path.join(self.reports_dir, f"{task_id}.pdf")
-        return path if os.path.exists(path) else None
+        # JSON 저장 (SecretStr 등 안전 변환)
+        json_path = os.path.join(self.reports_dir, f"{task_id}.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            safe_report = to_safe_json(report)
+            json.dump(safe_report, f, indent=2, ensure_ascii=False)
+        print(f"구조화 보고서 <JSON> 저장 완료: {json_path}")
+
+        # PDF 저장
+        pdf_path = os.path.join(self.reports_dir, f"{task_id}.pdf")
+        formatted_answer = (
+            f"[제목]\n{report.title}\n\n"
+            f"[사고 개요]\n{report.incident_summary}\n\n"
+            f"[사고 경위]\n{report.sequence_of_events}\n\n"
+            f"[피해 내역]\n{report.damages}\n\n"
+            f"[법령 근거]\n" + "\n".join(report.legal_basis) + "\n\n"
+            f"[산정 기준]\n{report.calculation_basis}\n\n"
+            f"[첨부서류]\n" + ", ".join(report.attachments) + "\n\n"
+            f"[결론]\n{report.conclusion}\n\n"
+            f"[조사관 의견]\n"
+            f"{getattr(report, 'recommendations', '보험사 검토 및 환경 당국의 후속 조치 필요.')}\n\n"
+        )
+
+        save_report_pdf(
+            path=pdf_path,
+            title=title,
+            answer=formatted_answer,
+            incident_data=incident_data,
+            subtitle=f"Task ID: {task_id}",
+        )
+        print(f"구조화 보고서 <PDF> 저장 완료: {pdf_path}")
+        return {"json": json_path, "pdf": pdf_path}
+
+    # ---------------------------------------------------------------------
+    def generate_structured_report(
+        self,
+        incident_data: Dict[str, Any],
+        use_rag: bool = True,
+        top_k: int = 5,
+        model: str = "gpt-4o-mini",
+        title: str = "해양 보험 청구 보고서",
+        temperature: float = 0.1,
+        collection: Optional[str] = None,
+    ) -> InsurancePydanticReportResponse:
+        rag_ctx = ""
+        if use_rag:
+            seed = self._build_seed_query(incident_data, incident_data.get("incident_type", "generic"))
+            rag_ctx = self._rag_context(
+                seed_query=seed, top_k=top_k, model=model, temperature=0.0, collection=collection
+            )
+
+        chain = StructuredReportChain(model=model, temperature=temperature)
+        return chain.generate_structured_report(
+            incident_data=incident_data,
+            rag_context=rag_ctx,
+        )

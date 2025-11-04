@@ -1,19 +1,6 @@
-
 """
 RAGChain - Retrieval-Augmented Generation (검색 기반 생성 체인)
-
-랭체인 표준 구조로 Retriever → PromptTemplate → ChatOpenAI → StrOutputParser
-
-1) Retriever를 이용해 관련 문서를 검색
-2) 검색된 문서들을 하나의 context 문자열로 병합
-3) PromptTemplate으로 프롬프트 구성
-4) ChatOpenAI로 LLM 호출
-5) StrOutputParser로 결과 텍스트 반환
-
-사용 예시:
-    rag = RAGChain(collection="marine_laws", top_k=5)
-    answer = rag.run("유류유출 사고의 보험 처리 절차를 요약해줘")
-
+보험사 내부 문체(공문체)로 강화된 버전
 """
 
 from typing import List, Optional
@@ -21,8 +8,7 @@ from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from langchain.schema import Document
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough, RunnableSequence
-
+from langchain_core.runnables import RunnablePassthrough
 from app.services.vectorstore import VectorStoreService
 
 
@@ -39,14 +25,6 @@ class RAGChain:
     ):
         """
         RAG 체인 초기화
-        Args:
-            collection: 벡터스토어 컬렉션명
-            top_k: 검색 문서 개수
-            model: 사용할 OpenAI LLM 모델명
-            temperature: 창의성 (낮을수록 객관적)
-            max_context_len: 프롬프트에 넣을 최대 문맥 길이
-            include_sources: 결과 하단에 문서 출처 요약 포함 여부
-            debug: True면 검색된 문서 및 context 콘솔 출력
         """
         self.collection = collection
         self.top_k = top_k
@@ -54,34 +32,39 @@ class RAGChain:
         self.debug = debug
         self.max_context_len = max_context_len
 
-        # (1) 벡터스토어 서비스 로드
+        # (1) 벡터스토어 서비스
         self.vs = VectorStoreService()
         self.retriever = self.vs.get_retriever(collection=collection, k=top_k)
 
-        # (2) LLM (OpenAI)
+        # (2) LLM
         self.llm = ChatOpenAI(model=model, temperature=temperature)
 
         # (3) 출력 파서
         self.parser = StrOutputParser()
 
-        # (4) 프롬프트 템플릿
+        # (4) 프롬프트 템플릿 (보험심사 문체)
         self.prompt = ChatPromptTemplate.from_template(
             """
-너는 해양 보험 청구 보고서 작성 보조 AI다.
-아래 [검색 문맥]에 포함된 정보를 사실 기반으로 사용하여 질문에 답하라.
-만약 관련 정보가 없다면 "근거 부족"이라고 답하라.
-가능하면 문서 출처를 요약해서 하단에 정리하라.
+당신은 해상보험 심사관이며, 아래 [검색 문맥]은 관련 법령·약관·협약에서 추출한 내용이다.
+이 정보를 바탕으로 사고 보고서 및 보험금 청구서 작성에 필요한 "법적 근거 문단"을 작성하라.
+
+작성 규칙:
+1. 문체는 공식 보고서체(예: "~에 의거하여", "~으로 판단된다")로 통일한다.
+2. 사실 확인이 불가능한 내용은 "확인 불가"로 명시한다.
+3. 법령, 협약, 약관 명칭은 정확히 표기하고, 조항이 있다면 번호를 함께 적는다.
+4. 객관적 사실·조문 중심으로 기술하고, 주관적 판단·권유 표현은 피한다.
+5. 원문 문맥 중 중요 문구는 ‘“...”’로 인용 표시한다.
+6. 결론 문장은 항상 “따라서 본 사고는 위 조항에 의거하여 ...로 분류된다.” 형식으로 마무리한다.
 
 [검색 문맥]
 {context}
 
-[질문]
+[질문/요청 사항]
 {question}
 """
         )
 
-        # (5) Runnable 시퀀스 구성
-        #    question → retriever → prompt → llm → parser
+        # (5) 체인 구성
         self.chain = (
             {"context": self._context_from_retriever, "question": RunnablePassthrough()}
             | self.prompt
@@ -92,7 +75,6 @@ class RAGChain:
     # -----------------------------
     # 내부 메서드
     # -----------------------------
-
     def _context_from_retriever(self, question: str) -> str:
         """
         Retriever로 문서 검색 → context 문자열 생성
@@ -102,10 +84,10 @@ class RAGChain:
         if self.debug:
             print("\n🔎 [RAG 검색 결과] ----------------------")
             for d in docs:
-                print(f"• {d.metadata.get('source', 'unknown')}: {d.page_content[:120]}...")
+                src = d.metadata.get('source', 'unknown')
+                print(f"• {src}: {d.page_content[:120]}...")
             print("----------------------------------------\n")
 
-        # 문서 내용 합치기
         merged = "\n\n".join([d.page_content for d in docs])
         if len(merged) > self.max_context_len:
             merged = merged[: self.max_context_len] + "\n\n...(문맥 길이 초과로 일부 생략됨)"
@@ -122,7 +104,6 @@ class RAGChain:
     # -----------------------------
     # 퍼블릭 메서드
     # -----------------------------
-
     def run(self, question: str) -> str:
         """
         단일 질문에 대해 RAG 파이프라인 실행.
@@ -136,7 +117,9 @@ class RAGChain:
         """
         docs: List[Document] = self.retriever.get_relevant_documents(question)
         context = "\n\n".join([d.page_content for d in docs])
-        answer = self.llm.invoke(self.prompt.format(context=context, question=question)).content
+        answer = self.llm.invoke(
+            self.prompt.format(context=context, question=question)
+        ).content
 
         return {
             "answer": answer,

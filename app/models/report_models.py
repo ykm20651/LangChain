@@ -3,6 +3,8 @@
 report_models.py
 - FastAPI용 Pydantic 데이터 모델 정의
 - 자유 질문 QA / 사고데이터 기반 보험 보고서 / 태스크 응답
+
+Spring의 @RequestBody DTO랑 역할 똑같음.
 """
 
 from pydantic import BaseModel, Field
@@ -10,31 +12,28 @@ from typing import Optional, Dict, Any, List
 
 
 # ------------------------------------------------------------
-# 1️. 자유 질문 기반 보고서 요청 / 응답 (아직 백엔드 API에 구현되어있지는 않음. 나중에 추후 사용자가 법률 관련 검색 질의 UI 및 API 추가 예정 )
-# ------------------------------------------------------------
-class ReportGenerationRequest(BaseModel):
-    """
-    자유 질문을 LangChain + OpenAI 모델을 통해 분석/보고서 생성하는 요청 모델.
-    """
-    question: str = Field(..., description="사용자 질문 또는 보고서 주제")
-    collection: Optional[str] = Field(default="default", description="Chroma 벡터스토어 컬렉션명")
-    top_k: Optional[int] = Field(default=4, description="검색할 상위 문서 수")
-    model: Optional[str] = Field(default="gpt-4o-mini", description="사용할 OpenAI 모델명")
-    temperature: Optional[float] = Field(default=0.2, description="OpenAI 모델 생성 온도 파라미터")
-
-
-class ReportResponse(BaseModel):
-    """
-    LangChain(OpenAI LLM)으로부터 생성된 답변 응답.
-    """
-    answer: str = Field(..., description="OpenAI 모델의 최종 응답 텍스트")
-
-
-# ------------------------------------------------------------
-# 2️.  사건 데이터 기반 해양 보험 보고서 생성 요청 -> 핵심 
+# 사건 데이터 기반 해양 보험 보고서 생성 요청 -> 핵심 
 # ------------------------------------------------------------
 from pydantic import BaseModel, Field
 from typing import Optional
+
+
+# ------------------------------------------------------------
+# 구조화된 보고서 출력 모델 (Pydantic 기반)
+# ------------------------------------------------------------
+class InsurancePydanticReportResponse(BaseModel):
+    """
+    LLM이 생성한 보험 보고서의 구조화된 출력 형식.
+    """
+    title: str
+    incident_summary: str
+    sequence_of_events: str
+    damages: str
+    legal_basis: List[str]
+    calculation_basis: Optional[str] = None
+    attachments: Optional[List[str]] = []
+    conclusion: Optional[str] = None
+
 
 class IncidentReportRequest(BaseModel):
     """
@@ -59,7 +58,7 @@ class IncidentReportRequest(BaseModel):
 
 
 # ------------------------------------------------------------
-# 3️. 비동기 태스크 응답
+# 비동기 태스크 응답
 # ------------------------------------------------------------
 class ReportTaskResponse(BaseModel):
     """
@@ -70,7 +69,7 @@ class ReportTaskResponse(BaseModel):
 
 
 # ------------------------------------------------------------
-# 4️. (선택) 사고유형 Enum 정의 (확장용)
+# (선택) 사고유형 Enum 정의 (확장용)
 # ------------------------------------------------------------
 class IncidentType(str):
     """

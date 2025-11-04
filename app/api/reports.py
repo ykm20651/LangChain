@@ -4,26 +4,25 @@ reports.py
 - FastAPI 엔드포인트 정의
 - 1. 해양 사고 데이터를 기반으로 보험 청구 보고서를 자동 생성 (비동기) -> 안다미로 핵심 ai 보고서 생성 라우터
 - 2. 보고서 PDF 다운로드 
-- 3,4. 자유 질문 QA (선택)
 """
 
 import os
 import uuid
+import time
+
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
 from app.models.report_models import (
-    ReportGenerationRequest,
-    ReportResponse,
+    InsurancePydanticReportResponse,
     IncidentReportRequest,
     ReportTaskResponse,
 )
-from app.services.report_service import ReportService, InsuranceReportService
+from app.services.report_service import InsuranceReportService
 
 # FastAPI 라우터 객체
 router = APIRouter()
 
 # 서비스 인스턴스
-qa_service = ReportService()
 insurance_service = InsuranceReportService()
 
 # ---------------------------------------------------------------------
@@ -68,60 +67,50 @@ async def generate_insurance_report(req: IncidentReportRequest, background_tasks
 # ---------------------------------------------------------------------
 @router.get("/download/{task_id}.pdf")
 async def download_report(task_id: str):
-    """
-    생성 완료된 PDF 보고서를 다운로드.
-    """
-    # 보험 보고서 → QA 보고서 순으로 경로 확인
-    path = insurance_service.get_report_path(task_id) or qa_service.get_report_path(task_id)
-    if not path or not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="보고서를 찾을 수 없습니다.")
-    return FileResponse(path, media_type="application/pdf", filename=os.path.basename(path))
-
+    for _ in range(10):  # 최대 10번 재시도
+        path = insurance_service.get_report_path(task_id)
+        if path and os.path.exists(path):
+            return FileResponse(path, media_type="application/pdf", filename=os.path.basename(path))
+        time.sleep(0.5)  # 0.5초 간격으로 기다림
+    raise HTTPException(status_code=404, detail="보고서를 찾을 수 없습니다.")
 
 
 # ---------------------------------------------------------------------
-# 3. 자유 질문 QA (RAG 기반) - 아직 질문까지는 만들지 않았음. 추후 추가 예정
+# 3. Pydantic 활용 
 # ---------------------------------------------------------------------
-@router.post("/chat", response_model=ReportResponse)
-async def chat(req: ReportGenerationRequest):
-    """
-    자유 질문에 대해 RAG 기반 QA를 수행.
-    """
-    try:
-        answer, _sid = qa_service.qa_with_memory(
-            question=req.question,
-            session_id=None,
-            collection=req.collection,
-            top_k=req.top_k,
-            model=req.model,
-            temperature=req.temperature,
-        )
-        return ReportResponse(answer=answer)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
-
-# ---------------------------------------------------------------------
-# 4. 자유 질문 → 보고서 PDF 생성 (비동기) - 아직 질문까지는 만들지 않았음. 추후 추가 예정
-# ---------------------------------------------------------------------
-@router.post("/generate-report", response_model=ReportTaskResponse)
-async def generate_report(req: ReportGenerationRequest, background_tasks: BackgroundTasks):
+@router.post("/generate/structured", response_model=ReportTaskResponse)
+async def generate_structured_insurance_report_async(
+    req: IncidentReportRequest,
+    background_tasks: BackgroundTasks,
+):
     """
-    자유 질문 기반 PDF 보고서 생성 (비동기)
+    사고 데이터를 기반으로 구조화된 보험 보고서를 비동기로 생성.
+    보고서는 JSON 파일로 저장되며, task_id로 조회 가능.
     """
     try:
         task_id = str(uuid.uuid4())
+
+        incident_data = {
+            "incident_type": req.incident_type,
+            "description": req.description,
+            "location": req.location,
+            "report_type": req.report_type,
+            "language": req.language,
+        }
+
         background_tasks.add_task(
-            qa_service.generate_and_save_report,
+            insurance_service.generate_structured_report_background,
             task_id=task_id,
-            question=req.question,
-            session_id=None,
+            incident_data=incident_data,
+            use_rag=req.use_rag,
             collection=req.collection,
             top_k=req.top_k,
-            title="자유 질의 기반 보고서",
             model=req.model,
-            temperature=req.temperature,
+            title=req.title,
+            temperature=0.1,
         )
+
         return ReportTaskResponse(task_id=task_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
